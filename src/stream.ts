@@ -26,7 +26,10 @@ export type RealRobotMessage = RobotMessage & { isInAtList?: boolean; atUsers?: 
 export function buildTrigger(config: DingConfig, msg: RealRobotMessage): TriggerLike | undefined {
   const text = (msg.text?.content ?? '').trim()
   if (!text) return undefined
-  const isDm = msg.conversationType === '1'
+  const isConfiguredGroup = config.chats.some((c) => c.openConversationId === msg.conversationId)
+  // Anything that is not a pre-registered group conversation is treated as a
+  // side chat (DM-like): dispatchable without registering every cid up front.
+  const isDm = !isConfiguredGroup
   const addressed = isDm ? 'direct' as const : ((msg.isInAtList === true || (msg.atUsers ?? []).length > 0) ? 'mention' as const : undefined)
   return {
     id: 'dingtalk:' + msg.msgId,
@@ -39,7 +42,7 @@ export function buildTrigger(config: DingConfig, msg: RealRobotMessage): Trigger
     text,
     channel: { source: 'dingtalk', thread: 'dingtalk:' + msg.conversationId,
       address: { conversation: msg.conversationId, type: msg.conversationType, staffId: msg.senderStaffId, robotCode: msg.robotCode || config.robotCode } },
-    meta: { conversationId: msg.conversationId, messageId: msg.msgId, isDm, senderNick: msg.senderNick },
+    meta: { conversationId: msg.conversationId, messageId: msg.msgId, isDm, isConfiguredGroup, senderNick: msg.senderNick },
   }
 }
 

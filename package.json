@@ -1,7 +1,7 @@
 {
   "name": "dsh-superagent-dingtalk",
   "description": "Direct DingTalk Source for dsh-superagent: Stream-mode bot connection feeds robot messages into the engine pipeline; replies go back via the OpenAPI.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "author": "Shuai-S",
   "type": "module",
