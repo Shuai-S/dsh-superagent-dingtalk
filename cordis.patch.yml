@@ -1,0 +1,4 @@
+# Mount the dingtalk Source plugin into the superagent profile.
+- insert:
+    - id: dsh-superagent-dingtalk
+      name: 'dsh-superagent-dingtalk'

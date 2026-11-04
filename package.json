@@ -1,0 +1,47 @@
+{
+  "name": "dsh-superagent-dingtalk",
+  "description": "Direct DingTalk Source for dsh-superagent: Stream-mode bot connection feeds robot messages into the engine pipeline; replies go back via the OpenAPI.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "author": "Shuai-S",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "files": [
+    "lib"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm typecheck && pnpm build"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "manifestVersion": 1
+  },
+  "dependencies": {
+    "dingtalk-stream": "^2.1.6-beta.1",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@types/node": "^22.20.0",
+    "tsdown": "^0.4.0",
+    "typescript": "^5.7.0"
+  }
+}
