@@ -5,6 +5,7 @@ import { DWClient, TOPIC_ROBOT, type RobotMessage } from 'dingtalk-stream'
 import type { SourceContextLike, TriggerLike } from './types.ts'
 import { HEALTH_ENTRY, type DingConfig } from './dingtalk-kind.ts'
 import { channelConfig } from './dingtalk-kind.ts'
+import { attachThinkingEmotion } from './robot.ts'
 
 interface DownStreamLike { data: string; headers?: { messageId?: string } }
 
@@ -41,7 +42,7 @@ export function buildTrigger(config: DingConfig, msg: RealRobotMessage): Trigger
     at: msg.createAt ? new Date(msg.createAt).toISOString() : new Date().toISOString(),
     text,
     channel: { source: 'dingtalk', thread: 'dingtalk:' + msg.conversationId,
-      address: { conversation: msg.conversationId, type: msg.conversationType, staffId: msg.senderStaffId, robotCode: msg.robotCode || config.robotCode, sessionWebhook: msg.sessionWebhook ?? '', webhookExpiresAt: String(msg.sessionWebhookExpiredTime ?? 0) } },
+      address: { conversation: msg.conversationId, type: msg.conversationType, staffId: msg.senderStaffId, robotCode: msg.robotCode || config.robotCode, sessionWebhook: msg.sessionWebhook ?? '', webhookExpiresAt: String(msg.sessionWebhookExpiredTime ?? 0), msgId: msg.msgId ?? '' } },
     meta: { conversationId: msg.conversationId, messageId: msg.msgId, isDm, isConfiguredGroup, senderNick: msg.senderNick },
   }
 }
@@ -83,6 +84,12 @@ export async function ensureClient(
   const client = new StreamClient({ clientId: config.clientId, clientSecret: secret }, async (msg: RobotMessage) => {
     const trigger = buildTrigger(config, msg)
     if (!trigger) return
+    // 「思考中」表情（可在设置关闭，读 channelConfig 而非闭包 config：切开关不触发重连）。
+    // fire-and-forget：贴表情失败只记日志，不阻塞接收与 Stream ack。
+    if (channelConfig.current?.thinkingEmotion !== false) {
+      void attachThinkingEmotion(config.clientId, secret, { robotCode: msg.robotCode || config.robotCode, msgId: msg.msgId, conversationId: msg.conversationId })
+        .catch(() => { /* 表情失败不影响接收主流程 */ })
+    }
     await source.receive(trigger)
   }, (connected) => {
     source.report(HEALTH_ENTRY, connected

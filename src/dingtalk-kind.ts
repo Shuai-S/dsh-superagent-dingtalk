@@ -3,7 +3,7 @@
  *  (docs/008-cookbook.md); the engine duck-types it at runtime. */
 import { z } from 'zod'
 import type { Localized, OutboundMessageLike, SourceContextLike, SourceKindLike, TriggerLike } from './types.ts'
-import { emptyLink, getAccessToken, sendRobotMessage } from './robot.ts'
+import { emptyLink, getAccessToken, recallThinkingEmotion, sendRobotMessage } from './robot.ts'
 
 export interface DingChat { openConversationId: string; name: string }
 export interface DingConfig {
@@ -12,6 +12,7 @@ export interface DingConfig {
   robotCode: string
   chats: DingChat[]
   directMessages: boolean
+  thinkingEmotion: boolean
 }
 
 export const HEALTH_ENTRY = 'dingtalkStream'
@@ -29,6 +30,7 @@ export const DingConfigSchema = z.object({
     name: z.string().default(''),
   })).default([]),
   directMessages: z.boolean().default(true),
+  thinkingEmotion: z.boolean().default(true),
 }).strict()
 export type DingConfigInput = z.input<typeof DingConfigSchema>
 
@@ -46,6 +48,7 @@ export const dingtalkKind = {
       { key: 'name', type: 'text', label: { zh: '群名', en: 'Name' }, optional: true },
     ] },
     { key: 'directMessages', type: 'switch', label: { zh: '接收机器人单聊', en: 'Receive bot direct messages' } },
+    { key: 'thinkingEmotion', type: 'switch', label: { zh: '「思考中」表情反馈', en: 'Thinking emotion feedback' }, hint: { zh: '收到消息时在原消息上贴「🤔思考中」，回复送达后自动撤回', en: 'Attach a thinking emotion on receipt; recalled once the reply goes out' } },
   ],
   health: ['dingtalkStream'],
   scope(input: { meta: Record<string, unknown> }, config: DingConfig) {
@@ -64,6 +67,14 @@ export const dingtalkKind = {
       const config = (channelConfig as { current?: DingConfig }).current
       if (!config) throw new Error('dingtalk: channel not ready (no config yet)')
       const address = message.channel.address as Record<string, string>
+      // 回复/通知已产生 → 撤回「思考中」表情；acknowledgement 只是接单回执，保留表情继续表示处理中。
+      if (message.kind !== 'acknowledgement' && config.thinkingEmotion !== false) {
+        await recallThinkingEmotion(config.clientId, config.appSecret, {
+          robotCode: address.robotCode ?? config.robotCode,
+          msgId: address.msgId ?? '',
+          conversationId: address.conversation ?? '',
+        }).catch(() => { /* 表情撤回失败不影响回复送达 */ })
+      }
       const webhook = address.sessionWebhook ?? ''
       const expiresAt = Number(address.webhookExpiresAt ?? 0) * 1000
       // Official-example pattern first: the message's own sessionWebhook (valid ~90 min).
