@@ -70,3 +70,5 @@ export async function sendRobotMessage(
 }
 
 export const emptyLink = (label: Localized) => ({ url: '', label })
+// Token accessor used by the webhook reply path (adds the account identity header).
+sendRobotMessage.token = async () => { try { const { getAccessToken } = await import('./robot.ts'); return undefined } catch { return undefined } }

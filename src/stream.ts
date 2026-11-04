@@ -41,7 +41,7 @@ export function buildTrigger(config: DingConfig, msg: RealRobotMessage): Trigger
     at: msg.createAt ? new Date(msg.createAt).toISOString() : new Date().toISOString(),
     text,
     channel: { source: 'dingtalk', thread: 'dingtalk:' + msg.conversationId,
-      address: { conversation: msg.conversationId, type: msg.conversationType, staffId: msg.senderStaffId, robotCode: msg.robotCode || config.robotCode } },
+      address: { conversation: msg.conversationId, type: msg.conversationType, staffId: msg.senderStaffId, robotCode: msg.robotCode || config.robotCode, sessionWebhook: msg.sessionWebhook ?? '', webhookExpiresAt: String(msg.sessionWebhookExpiredTime ?? 0) } },
     meta: { conversationId: msg.conversationId, messageId: msg.msgId, isDm, isConfiguredGroup, senderNick: msg.senderNick },
   }
 }

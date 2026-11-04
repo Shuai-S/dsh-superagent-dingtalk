@@ -3,7 +3,7 @@
  *  (docs/008-cookbook.md); the engine duck-types it at runtime. */
 import { z } from 'zod'
 import type { Localized, OutboundMessageLike, SourceContextLike, SourceKindLike, TriggerLike } from './types.ts'
-import { emptyLink, sendRobotMessage } from './robot.ts'
+import { emptyLink, getAccessToken, sendRobotMessage } from './robot.ts'
 
 export interface DingChat { openConversationId: string; name: string }
 export interface DingConfig {
@@ -63,7 +63,22 @@ export const dingtalkKind = {
     async send(_host: unknown, message: OutboundMessageLike): Promise<'sent' | 'gone'> {
       const config = (channelConfig as { current?: DingConfig }).current
       if (!config) throw new Error('dingtalk: channel not ready (no config yet)')
-      await sendRobotMessage(config.clientId, config.appSecret, config.robotCode, message.channel.address as Record<string, string>, message.text)
+      const address = message.channel.address as Record<string, string>
+      const webhook = address.sessionWebhook ?? ''
+      const expiresAt = Number(address.webhookExpiresAt ?? 0) * 1000
+      // Official-example pattern first: the message's own sessionWebhook (valid ~90 min).
+      if (webhook && Date.now() < expiresAt) {
+        const token = await getAccessToken(config.clientId, config.appSecret)
+        const res = await fetch(webhook, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-acs-dingtalk-access-token': token },
+          body: JSON.stringify({ msgtype: 'text', text: { content: message.text } }),
+          signal: AbortSignal.timeout(15_000),
+        })
+        if (res.ok) return 'sent'
+        // fall through to the OpenAPI path on webhook failure
+      }
+      await sendRobotMessage(config.clientId, config.appSecret, config.robotCode, address, message.text)
       return 'sent'
     },
     link(address: Record<string, string>) {
