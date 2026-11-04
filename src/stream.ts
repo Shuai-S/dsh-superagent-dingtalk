@@ -1,13 +1,71 @@
 /** Stream-mode client lifecycle: one DWClient per config version; robot
  *  messages become Triggers (acked immediately; trigger ids dedupe server
  *  redeliveries); connection state reports to health each poll round. */
+import { mkdir, rename } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { DWClient, TOPIC_ROBOT, type RobotMessage } from 'dingtalk-stream'
 import type { SourceContextLike, TriggerLike } from './types.ts'
 import { HEALTH_ENTRY, type DingConfig } from './dingtalk-kind.ts'
 import { channelConfig } from './dingtalk-kind.ts'
-import { attachThinkingEmotion } from './robot.ts'
+import { attachThinkingEmotion, downloadDingtalkMediaToFile } from './robot.ts'
 
 interface DownStreamLike { data: string; headers?: { messageId?: string } }
+
+export interface DownloadedMedia { kind: 'file' | 'video' | 'audio'; code: string; path?: string; name: string; error?: string }
+
+const MEDIA_ROOT = join(homedir(), '.dsh', 'dingtalk-attachments')
+
+const MEDIA_EXTS: Record<string, string> = {
+  'video/mp4': '.mp4', 'video/quicktime': '.mov', 'video/x-matroska': '.mkv', 'video/webm': '.webm',
+  'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/aac': '.aac', 'audio/wav': '.wav', 'audio/x-wav': '.wav', 'audio/amr': '.amr',
+  'application/pdf': '.pdf', 'application/msword': '.doc', 'application/vnd.ms-excel': '.xls',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+  'application/zip': '.zip', 'text/plain': '.txt', 'text/markdown': '.md',
+}
+
+const extFromName = (name: string): string | undefined => {
+  const m = /\.[a-z0-9]{1,6}$/i.exec(name)
+  return m ? m[0].toLowerCase() : undefined
+}
+
+/** 收消息即把 file/video/audio 附件落盘到 ~/.dsh/dingtalk-attachments/<msgId>/，路径注入 trigger 文本供 agent 的 read/bash 工具消化；单件失败降级不阻塞。 */
+export async function downloadMessageMedia(config: DingConfig, msg: RealRobotMessage): Promise<DownloadedMedia[]> {
+  const items: { kind: 'file' | 'video' | 'audio'; code: string; name: string }[] = []
+  for (const p of msg.content?.richText ?? []) {
+    const kind = p.type || p.msgType || 'text'
+    if ((kind === 'file' || kind === 'video' || kind === 'audio') && p.downloadCode) {
+      items.push({ kind: kind as 'file' | 'video' | 'audio', code: p.downloadCode, name: (p.fileName || p.name || p.text || '').trim() })
+    }
+  }
+  const topKind = String(msg.msgtype ?? '')
+  if ((topKind === 'file' || topKind === 'video' || topKind === 'audio') && msg.content?.downloadCode) {
+    items.push({ kind: topKind as 'file' | 'video' | 'audio', code: msg.content.downloadCode, name: (msg.content.fileName || msg.content.name || '').trim() })
+  }
+  if (items.length === 0) return []
+  const dir = join(MEDIA_ROOT, (msg.msgId || 'msg').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60))
+  const out: DownloadedMedia[] = []
+  for (const [i, item] of items.entries()) {
+    try {
+      await mkdir(dir, { recursive: true })
+      const base = (item.name.replace(/\.[^./\\]*$/, '') || `media-${i + 1}`).replace(/[^\w\u4e00-\u9fa5.-]/g, '_').slice(0, 60)
+      const partPath = join(dir, base + '.part')
+      // 断点续传：.part 保留跨重推进度；mime 到手后 rename 成带扩展名的最终名。
+      const { bytes, mime } = await downloadDingtalkMediaToFile(config.clientId, config.appSecret, { downloadCode: item.code, robotCode: msg.robotCode || config.robotCode }, partPath)
+      const ext = MEDIA_EXTS[mime] ?? extFromName(item.name) ?? (item.kind === 'video' ? '.mp4' : item.kind === 'audio' ? '.mp3' : '')
+      const path = join(dir, base + ext)
+      await rename(partPath, path)
+      out.push({ ...item, path })
+      console.error(`[dingtalk] media saved: kind=${item.kind} bytes=${bytes} path=${path}`)
+    } catch (error) {
+      out.push({ ...item, error: String(error).slice(0, 160) })
+      console.error(`[dingtalk] media download failed: kind=${item.kind} ${String(error).slice(0, 200)}`)
+    }
+  }
+  return out
+}
 
 export function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -22,11 +80,54 @@ export function resolveSecret(config: DingConfig): string {
   return (config.appSecret ?? '').trim()
 }
 
-export type RealRobotMessage = RobotMessage & { isInAtList?: boolean; atUsers?: { dingtalkId: string; staffId: string }[] }
+export type RealRobotMessage = RobotMessage & {
+  isInAtList?: boolean
+  atUsers?: { dingtalkId: string; staffId: string }[]
+  /** richText 消息（图片/文件+文字混合）：文字在 content.richText[] 的 text 项里，此时 text.content 为空。 */
+  content?: {
+    richText?: { type?: string; msgType?: string; text?: string; downloadCode?: string; fileName?: string; name?: string }[]
+    /** 独立媒体消息（msgtype=audio/video/file）的下载码、文件名与语音转写。 */
+    downloadCode?: string
+    fileName?: string
+    name?: string
+    recognition?: string
+  }
+}
 
-export function buildTrigger(config: DingConfig, msg: RealRobotMessage): TriggerLike | undefined {
-  const text = (msg.text?.content ?? '').trim()
+export function buildTrigger(config: DingConfig, msg: RealRobotMessage, media: DownloadedMedia[] = []): TriggerLike | undefined {
+  // 纯文本消息走 text.content；语音优先取钉钉自带转写 recognition；richText（图+文）消息：文字项拼接、
+  // 图片项以标记内嵌 downloadCode（threadContext.images 据标记提取，image() 下载注入；先例：qwen-code DingtalkAdapter / 引擎 feishu-image）。
+  const parts: string[] = []
+  const imageCodes: string[] = []
+  for (const p of msg.content?.richText ?? []) {
+    const kind = p.type || p.msgType || 'text'
+    if (kind === 'text') parts.push(p.text ?? '')
+    else if ((kind === 'picture' || kind === 'image') && p.downloadCode) {
+      parts.push(`[dingtalk-image:${p.downloadCode}]`)
+      imageCodes.push(p.downloadCode)
+    }
+  }
+  // 独立媒体消息（msgtype=audio/video/file 整条一条，qwen-code 同样处理）。
+  const topKind = String(msg.msgtype ?? '')
+  if ((topKind === 'video' || topKind === 'file' || topKind === 'audio') && msg.content?.downloadCode) {
+    parts.push(`[dingtalk-${topKind}:${msg.content.downloadCode}]`)
+  }
+  const recognition = msg.content?.recognition?.trim() ?? ''
+  let text = (msg.text?.content || recognition || parts.join('')).trim()
   if (!text) return undefined
+  if (imageCodes.length > 0) console.error(`[dingtalk] images embedded: n=${imageCodes.length} msgId=${msg.msgId}`)
+  // 落盘结果注入：文件用 read/bash 消化，视频提示 ffmpeg 抽帧；失败降级说明。
+  if (media.length > 0) {
+    const notes = media.map((m) => {
+      const label = m.kind === 'video' ? '视频' : m.kind === 'audio' ? '语音' : '文件'
+      if (m.path) {
+        const hint = m.kind === 'video' ? '如需理解内容，可用 ffmpeg 抽帧后用 read_image 查看' : '用 read/bash 工具查看内容'
+        return `[${label}已保存: ${m.path}${m.name ? `（原名: ${m.name}）` : ''} —— ${hint}]`
+      }
+      return `[钉钉${label}下载失败${m.error ? `: ${m.error}` : ''}]`
+    })
+    text = `${text}\n${notes.join('\n')}`
+  }
   const isConfiguredGroup = config.chats.some((c) => c.openConversationId === msg.conversationId)
   // Anything that is not a pre-registered group conversation is treated as a
   // side chat (DM-like): dispatchable without registering every cid up front.
@@ -82,14 +183,20 @@ export async function ensureClient(
     return
   }
   const client = new StreamClient({ clientId: config.clientId, clientSecret: secret }, async (msg: RobotMessage) => {
-    const trigger = buildTrigger(config, msg)
-    if (!trigger) return
     // 「思考中」表情（可在设置关闭，读 channelConfig 而非闭包 config：切开关不触发重连）。
     // fire-and-forget：贴表情失败只记日志，不阻塞接收与 Stream ack。
     if (channelConfig.current?.thinkingEmotion !== false) {
       void attachThinkingEmotion(config.clientId, secret, { robotCode: msg.robotCode || config.robotCode, msgId: msg.msgId, conversationId: msg.conversationId })
         .catch(() => { /* 表情失败不影响接收主流程 */ })
     }
+    // 文件/视频/语音附件先落盘（带超时降级），receive 时路径已就位。
+    const media = await downloadMessageMedia(config, msg)
+    const trigger = buildTrigger(config, msg, media)
+    if (!trigger) {
+      console.error(`[dingtalk] skip msg: type=${msg.msgtype} msgId=${msg.msgId} (no text after parse)`)
+      return
+    }
+    console.error(`[dingtalk] msg in: type=${msg.msgtype} msgId=${msg.msgId} chat=${msg.conversationType} text="${trigger.text.slice(0, 60)}"`)
     await source.receive(trigger)
   }, (connected) => {
     source.report(HEALTH_ENTRY, connected

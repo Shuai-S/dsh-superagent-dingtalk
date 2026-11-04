@@ -3,7 +3,7 @@
  *  (docs/008-cookbook.md); the engine duck-types it at runtime. */
 import { z } from 'zod'
 import type { Localized, OutboundMessageLike, SourceContextLike, SourceKindLike, TriggerLike } from './types.ts'
-import { emptyLink, getAccessToken, recallThinkingEmotion, sendRobotMessage } from './robot.ts'
+import { downloadDingtalkImage, emptyLink, getAccessToken, recallThinkingEmotion, sendRobotMessage } from './robot.ts'
 
 export interface DingChat { openConversationId: string; name: string }
 export interface DingConfig {
@@ -17,6 +17,10 @@ export interface DingConfig {
 
 export const HEALTH_ENTRY = 'dingtalkStream'
 const dmRowId = 'direct-messages'
+
+/** 从消息文本提取图片 key（与 buildTrigger 内嵌的 [dingtalk-image:CODE] 标记配对；keys 必须来自原文，防任意注入）。 */
+const dingtalkImageKeys = (text: string): string[] =>
+  [...new Set([...text.matchAll(/\[dingtalk-image:([^\]]+)\]/g)].map((m) => m[1] ?? ''))].filter(Boolean)
 
 // channel.send reads config through this holder; watch() refreshes it every round.
 export const channelConfig: { current?: DingConfig } = {}
@@ -67,17 +71,19 @@ export const dingtalkKind = {
       const config = (channelConfig as { current?: DingConfig }).current
       if (!config) throw new Error('dingtalk: channel not ready (no config yet)')
       const address = message.channel.address as Record<string, string>
-      // 回复/通知已产生 → 撤回「思考中」表情；acknowledgement 只是接单回执，保留表情继续表示处理中。
-      if (message.kind !== 'acknowledgement' && config.thinkingEmotion !== false) {
+      // 「思考中」撤回时机 = 回复**确实送达之后**（发送失败/重试期间表情保留，仍表示处理中）；
+      // acknowledgement 只是接单回执，不触发撤回。
+      const recallAfterSend = message.kind !== 'acknowledgement' && config.thinkingEmotion !== false
+      const recallEmotion = async () => {
         await recallThinkingEmotion(config.clientId, config.appSecret, {
           robotCode: address.robotCode ?? config.robotCode,
           msgId: address.msgId ?? '',
           conversationId: address.conversation ?? '',
-        }).catch(() => { /* 表情撤回失败不影响回复送达 */ })
+        }).catch((error: unknown) => { console.error(`[dingtalk] recall pipe error: ${String(error).slice(0, 200)}`) })
       }
+      console.error(`[dingtalk] outbound: kind=${message.kind} msgId=${address.msgId ?? '(none)'} text="${message.text.slice(0, 40)}"`)
       const webhook = address.sessionWebhook ?? ''
-      const expiresAt = Number(address.webhookExpiresAt ?? 0) * 1000
-      // Official-example pattern first: the message's own sessionWebhook (valid ~90 min).
+      const expiresAt = Number(address.webhookExpiresAt ?? 0) // 钉钉 sessionWebhookExpiredTime 本就是毫秒（13 位），不再乘 1000。
       if (webhook && Date.now() < expiresAt) {
         const token = await getAccessToken(config.clientId, config.appSecret)
         const res = await fetch(webhook, {
@@ -86,10 +92,24 @@ export const dingtalkKind = {
           body: JSON.stringify({ msgtype: 'text', text: { content: message.text } }),
           signal: AbortSignal.timeout(15_000),
         })
-        if (res.ok) return 'sent'
+        if (res.ok) {
+          // webhook 的 HTTP 200 不代表成功：body.errcode != 0 是失败（限流/权限/参数），必须检查后才能记 sent。
+          const body = (await res.json().catch(() => ({}))) as { errcode?: number; errmsg?: string }
+          if (body.errcode === undefined || body.errcode === 0) {
+            console.error('[dingtalk] reply sent via webhook')
+            if (recallAfterSend) await recallEmotion()
+            return 'sent'
+          }
+          console.error(`[dingtalk] webhook errcode=${body.errcode} ${body.errmsg ?? ''} — falling back to OpenAPI`)
+        } else {
+          console.error(`[dingtalk] webhook HTTP ${res.status} — falling back to OpenAPI`)
+        }
         // fall through to the OpenAPI path on webhook failure
+      } else if (webhook) {
+        console.error('[dingtalk] webhook expired — using OpenAPI path')
       }
       await sendRobotMessage(config.clientId, config.appSecret, config.robotCode, address, message.text)
+      if (recallAfterSend) await recallEmotion()
       return 'sent'
     },
     link(address: Record<string, string>) {
@@ -99,6 +119,40 @@ export const dingtalkKind = {
   threadContext: {
     messageId(trigger: TriggerLike): string {
       return String(trigger.meta.messageId ?? '')
+    },
+    // 图片支持（先例：引擎 feishu-image.ts）——images 从文本提取 key，image 下载后经 attachments.saveImage 注入会话。
+    images(text: string): string[] {
+      return dingtalkImageKeys(text)
+    },
+    async image(agent: unknown, _commands: unknown, _trigger: TriggerLike, message: { id: string; text: string }, key: string, _stateDir: string, signal: AbortSignal) {
+      if (!dingtalkImageKeys(message.text).includes(key)) throw new Error('Choose an image key from this source message')
+      const config = (channelConfig as { current?: DingConfig }).current
+      if (!config) throw new Error('dingtalk: channel not ready (no config yet)')
+      const host = agent as {
+        ctx?: { get?: (name: string) => unknown }
+        session?: { requestHeader?: () => { config?: { provider?: string; model?: string } } }
+        options?: { provider?: string; model?: string }
+      }
+      const attachments = host.ctx?.get?.('attachments') as {
+        saveImage: (input: { data: Buffer; mediaType: string; name: string }) => Promise<unknown>
+        imageLimits?: { maxImageBytes?: number; maxMessageImageBytes?: number }
+      } | undefined
+      if (!attachments?.saveImage) throw new Error('Image reading is unavailable: no attachment service is mounted')
+      const route = host.session?.requestHeader?.()?.config
+      const provider = route?.provider ?? host.options?.provider
+      const model = route?.model ?? host.options?.model
+      const llm = host.ctx?.get?.('llm') as { resolveModelInfo?: (p: string, m: string, s: AbortSignal) => Promise<{ inputModalities?: string[] }> } | undefined
+      if (!llm?.resolveModelInfo || !provider || !model) throw new Error('Image reading is unavailable: the current model route is unresolved')
+      const info = await llm.resolveModelInfo(provider, model, signal)
+      if (!info.inputModalities?.includes('image')) throw new Error(`Model ${model} does not support image input; the image has not been inspected`)
+      signal.throwIfAborted()
+      const media = await downloadDingtalkImage(config.clientId, config.appSecret, { downloadCode: key, robotCode: config.robotCode })
+      const maxBytes = Math.min(attachments.imageLimits?.maxImageBytes ?? 20 * 1024 * 1024, attachments.imageLimits?.maxMessageImageBytes ?? 20 * 1024 * 1024)
+      if (media.data.length > maxBytes) throw new Error(`The image exceeds the ${maxBytes} byte limit`)
+      const name = `dingtalk-${key.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'image'}.${media.mediaType.split('/')[1]}`
+      const image = await attachments.saveImage({ data: media.data, mediaType: media.mediaType, name })
+      signal.throwIfAborted()
+      return { source_message_id: message.id, image_key: key, image }
     },
     async read(_commands: unknown, trigger: TriggerLike, part: 'thread' | 'root' | 'parent', _cursor: string | undefined, _config: DingConfig) {
       // v1: the assessment reads the trigger's own message; conversation history needs extra API permissions.
