@@ -151,12 +151,15 @@ export function buildTrigger(config: DingConfig, msg: RealRobotMessage, media: D
 /** Wraps the dingtalk-stream DWClient so the SDK stays swappable. */
 export class StreamClient {
   connected = false
+  lastInboundAt = 0
   private inner: DWClient
   constructor(private readonly config: { clientId: string; clientSecret: string }, onRobot: (msg: RealRobotMessage) => Promise<void>, onConn: (connected: boolean) => void) {
     this.inner = new DWClient({ clientId: config.clientId, clientSecret: config.clientSecret, keepAlive: true, debug: false, autoReconnect: true } as never)
     this.inner.registerCallbackListener(TOPIC_ROBOT, (downstream: DownStreamLike) => {
       let msg: RobotMessage | undefined
       try { msg = JSON.parse(downstream.data) as RobotMessage } catch { return { status: 'SUCCESS' as const } }
+      this.connected = true   // a message arriving over the stream is proof of connectivity
+      this.lastInboundAt = Date.now()
       if (msg && onRobot) void onRobot(msg as RealRobotMessage).catch(() => { /* receive errors surface via evals health */ })
       return { status: 'SUCCESS' as const, message: 'OK' }
     })
