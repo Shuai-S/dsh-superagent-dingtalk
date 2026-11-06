@@ -10,7 +10,8 @@
     ".": "./lib/index.js"
   },
   "files": [
-    "lib"
+    "lib",
+    "cordis.patch.yml"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
