@@ -1,6 +1,7 @@
 {
   "meta": {
-    "title": "DingTalk Source",
-    "description": "Direct DingTalk source: a Stream-mode bot connection feeds robot messages (group @-mentions or direct chats) into the engine pipeline; replies go back via the OpenAPI."
+    "title": "DingTalk Bots Source",
+    "description": "Direct DingTalk source: one Stream connection per bot feeds group @-mentions and direct chats into the engine pipeline; replies return via the OpenAPI as the originating bot. Bots, chats, and allowlists tune live on the panel. Requires an enterprise app with the bot published on open-dev.dingtalk.com.",
+    "detail": "docs/DETAIL.md"
   }
 }

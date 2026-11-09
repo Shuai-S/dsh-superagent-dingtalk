@@ -1,6 +1,7 @@
 {
   "meta": {
-    "title": "钉钉 Source",
-    "description": "钉钉直连消息源：Stream 模式长连接实时接收机器人消息（群内 @ 或单聊），走引擎准入→评估→Ticket→执行链路，回复经 OpenAPI 直接回钉钉。"
+    "title": "钉钉机器人 Source",
+    "description": "钉钉直连消息源：多机器人各持一条 Stream 长连接，实时接收群 @ 与单聊消息，走引擎准入→评估→Ticket→执行链路，回复经 OpenAPI 以对应机器人身份回钉钉。机器人、群与白名单都在面板调整，改动实时生效。使用前需在 open-dev.dingtalk.com 创建企业内部应用并发布机器人。",
+    "detail": "docs/DETAIL.zh.md"
   }
 }
