@@ -1,0 +1,45 @@
+# CI 闸门：push main 与所有 PR 都跑完整检查（typecheck + build + test + 打包探针）。
+# 发布走 release.yml（tag 触发），本工作流绝不发布。
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.23.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check (typecheck + build)
+        run: pnpm check
+
+      - name: Test
+        run: pnpm test
+
+      - name: Verify package
+        run: node scripts/verify-package.mjs

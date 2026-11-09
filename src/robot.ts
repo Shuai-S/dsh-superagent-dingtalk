@@ -23,11 +23,13 @@ export interface RobotMessage {
 }
 
 export interface TokenCache { token: string; expiresAt: number }
-const tokenCache: { current?: TokenCache } = {}
+/** 多机器人：每个 AppKey 独立缓存 accessToken（单槽会让两个机器人互相踢掉对方的有效 token）。 */
+const tokenCache = new Map<string, TokenCache>()
 
 export async function getAccessToken(clientId: string, clientSecret: string): Promise<string> {
   const now = Date.now()
-  if (tokenCache.current && tokenCache.current.expiresAt > now + 60_000) return tokenCache.current.token
+  const cached = tokenCache.get(clientId)
+  if (cached && cached.expiresAt > now + 60_000) return cached.token
   const res = await fetch('https://api.dingtalk.com/v1.0/oauth2/accessToken', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -36,7 +38,7 @@ export async function getAccessToken(clientId: string, clientSecret: string): Pr
   })
   const body = (await res.json()) as { accessToken?: string; expireIn?: number }
   if (!res.ok || !body.accessToken) throw new Error('accessToken failed: HTTP ' + res.status + ' ' + JSON.stringify(body).slice(0, 200))
-  tokenCache.current = { token: body.accessToken, expiresAt: now + (body.expireIn ?? 7200) * 1000 }
+  tokenCache.set(clientId, { token: body.accessToken, expiresAt: now + (body.expireIn ?? 7200) * 1000 })
   return body.accessToken
 }
 
@@ -80,8 +82,6 @@ export async function sendRobotMessage(
 }
 
 export const emptyLink = (label: Localized) => ({ url: '', label })
-// Token accessor used by the webhook reply path (adds the account identity header).
-sendRobotMessage.token = async () => { try { const { getAccessToken } = await import('./robot.ts'); return undefined } catch { return undefined } }
 
 // ===== 「思考中」表情（robot/emotion/reply | recall） =====
 // 契约来源：钉钉官方 SDK alibabacloud-dingtalk robot_1_0（RobotReplyEmotion / RobotRecallEmotion，
@@ -100,7 +100,9 @@ export interface EmotionTarget { robotCode: string; msgId: string; conversationI
 const EMOTION_TTL_MS = 30 * 60_000
 const EMOTION_MAP_LIMIT = 500
 const emotionTimers = new Map<string, ReturnType<typeof setTimeout>>()
-/** 已贴过表情的 msgId：钉钉 Stream 是 at-least-once 投递，重连/超时会重推同 msgId，去重防表情「撤了又回来」。 */
+/** 已贴过表情的目标：钉钉 Stream 是 at-least-once 投递，重连/超时会重推同 msgId，去重防表情「撤了又回来」。
+ *  键含 robotCode：同一 msgId 可能同时 @ 了两个机器人，两条 Stream 各收到一次，表情按机器人独立去重与撤回。 */
+export const emotionKey = (target: EmotionTarget): string => (target.robotCode || '') + ':' + target.msgId
 const emotionSeen = new Set<string>()
 
 async function robotEmotion(action: 'reply' | 'recall', clientId: string, clientSecret: string, target: EmotionTarget): Promise<void> {
@@ -128,12 +130,13 @@ async function robotEmotion(action: 'reply' | 'recall', clientId: string, client
 /** 在入站消息上贴「🤔思考中」。失败抛给调用方记日志，绝不影响接收主流程。 */
 export async function attachThinkingEmotion(clientId: string, clientSecret: string, target: EmotionTarget): Promise<void> {
   if (!target.msgId) return
-  // 重推去重：同 msgId 只贴一次（引擎按 trigger id 幂等，表情也要对齐）。
-  if (emotionSeen.has(target.msgId)) {
+  const key = emotionKey(target)
+  // 重推去重：同 robotCode+msgId 只贴一次（引擎按 trigger id 幂等，表情也要对齐）。
+  if (emotionSeen.has(key)) {
     console.error(`[dingtalk] emotion skip (redelivered): msgId=${target.msgId}`)
     return
   }
-  emotionSeen.add(target.msgId)
+  emotionSeen.add(key)
   if (emotionSeen.size >= EMOTION_MAP_LIMIT) {
     const oldestSeen = emotionSeen.values().next().value
     if (oldestSeen !== undefined) emotionSeen.delete(oldestSeen)
@@ -154,10 +157,10 @@ export async function attachThinkingEmotion(clientId: string, clientSecret: stri
     return
   }
   console.error(`[dingtalk] emotion attached: msgId=${target.msgId}`)
-  const existing = emotionTimers.get(target.msgId)
+  const existing = emotionTimers.get(key)
   if (existing) clearTimeout(existing)
-  emotionTimers.set(target.msgId, setTimeout(() => {
-    emotionTimers.delete(target.msgId)
+  emotionTimers.set(key, setTimeout(() => {
+    emotionTimers.delete(key)
     void robotEmotion('recall', clientId, clientSecret, target).catch(() => { /* TTL 撤回失败仅忽略 */ })
   }, EMOTION_TTL_MS))
 }
@@ -165,8 +168,9 @@ export async function attachThinkingEmotion(clientId: string, clientSecret: stri
 /** 撤回「🤔思考中」。幂等 best-effort：进程重启后登记丢失也照常发撤回请求，由钉钉侧兜底。 */
 export async function recallThinkingEmotion(clientId: string, clientSecret: string, target: EmotionTarget): Promise<void> {
   if (!target.msgId) return
-  const timer = target.msgId ? emotionTimers.get(target.msgId) : undefined
-  if (timer) { clearTimeout(timer); emotionTimers.delete(target.msgId) }
+  const key = emotionKey(target)
+  const timer = emotionTimers.get(key)
+  if (timer) { clearTimeout(timer); emotionTimers.delete(key) }
   try {
     await robotEmotion('recall', clientId, clientSecret, target)
   } catch (error) {
