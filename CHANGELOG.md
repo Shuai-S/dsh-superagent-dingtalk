@@ -7,6 +7,10 @@
 ## [Unreleased]
 
 ### Added
+
+- P-C'（契约 §1/§4）：「源设置」共享页壳接入——vendored shell + src/shell/tab.ts（健康/目标 CRUD/deliver 测试，address=staffId 或 conversationId）+ src/client.ts 新 client bundle 入口（esbuild --bundle devDep 豁免；react 宿主 require）；targets CRUD 路由 + targets.ts 增 upsert/remove；投递 actor id 统一为 dsh-superagent-dingtalk
+
+### Added
 - ACL 访问模式（契约 docs/rpc-contract.md §3）：配置增可选 `policy`（`{mode:'allowlist'|'open', allowUsers, groupOnly?, denyText?:{zh,en}}`；不设 = 全放行向后兼容，形状非法按 schema 拒绝不做静默降级）；vendored `tools/acl/acl.ts` → `src/acl.ts`（纯函数判定，零 npm 依赖）；判定在派发（source.receive）之前、按机器人维度 deny 计数：拒绝经 robot 文本消息回执 denyText（群消息回群、单聊回单聊，与回复同路径语义），回执失败只记 stderr 不入 failure-log（ACL 拒绝不是发送失败）；健康计数 detail 增 `deny=`。会话类型不取 conversationType 字段（本环境不可信），按 chats 配置推断——已登记群 = group，其余 = single。
 - 主动投递（契约 §2，P-B）：inject 增 `webServer`（dingtalk 首次引入；seam 不在时 log 一次并跳过路由注册，不崩启动）；路由前缀 `/dsh-dingtalk/api`——`POST /deliver`（`{targetId,text,kind?}` 构造非人类 Trigger（`human:false`、`meta.deliver:true`、`addressed:'direct'`、actor=`deliver`）交 `source.receive()`；400/404/409/受理语义按契约；单聊目标走 robot.directMessages 闸门、群目标须已登记 chats，与入站同规则）、`POST /deliver/test`（不经引擎直调 sendRobotMessage（oTo/group 端点）发双语测试文案，返回 `{ok,sent,detail}`）、`GET /health`（状态 + 机器人合计 in/out/fail/deny 计数 + 最近 20 条 failure-log + dedup 水位）；目标表 `~/.local/state/dsh-superagent-dingtalk/targets.json`（targetId 1–128 字符 `[A-Za-z0-9._@:-]`，tmp+rename 原子写；目标管理 UI 属 P-C'）。
 - 主动投递引擎侧配置前提（实读引擎 src/policy.ts machineGate / src/sources/registry.ts，2026-11-09，引擎升级后需复核）：非人类 Trigger 过引擎 machineGate——settings 里 `policy.sources.dingtalk.bots` 需列出投递 actor（本包恒为 `{ "id": "deliver" }`）且 `eval.mode ≠ "off"`，否则以 `not_human` 被静默忽略（auto 模式下 inferred 候选才转工单）；本包 deliver trigger 恒带 `addressed:'direct'`（machineGate 的 addressed 门）且 meta 带齐 dingtalk kind `scope()` 判 listened 所需字段（accountId / isDm / conversationId）。

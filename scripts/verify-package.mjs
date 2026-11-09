@@ -46,6 +46,18 @@ if (pkgText) {
     // P-B 路由契约探针：webServer seam 路由名防漂移（client bundle 探针 N/A：本包
     // 无 client bundle，「源设置」页壳属 P-C'）。
     check("lib/index.js contains '/dsh-dingtalk/api'", lib.includes('/dsh-dingtalk/api'), 'deliver route prefix drifted')
+// P-C'：client bundle 探针（壳注册标识，防 tree-shaking 假阴性）
+if (pkg.exports && pkg.exports['./client']) {
+  const fsp = await import('node:fs/promises')
+  const client = await fsp.readFile(resolve(root, 'lib', 'client.js'), 'utf8')
+  for (const probe of [
+    { label: 'sources shell page id', patterns: ['dsh-superagent-sources-settings'] },
+    { label: 'sources tab slot', patterns: ['dsh.sources.settings.tabs'] },
+    { label: 'panel id', patterns: ['dsh-superagent-dingtalk'] },
+  ]) {
+    check('client probe [' + probe.label + ']', probe.patterns.some((p) => client.includes(p)), 'missing from lib/client.js')
+  }
+}
     check("lib/index.js contains '/deliver'", lib.includes('/deliver'), 'deliver route literal drifted')
   }
 

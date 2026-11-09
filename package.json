@@ -9,7 +9,8 @@
   "exports": {
     ".": "./lib/index.js",
     "./package.json": "./package.json",
-    "./locale/*.json": "./locale/*.json"
+    "./locale/*.json": "./locale/*.json",
+    "./client": "./lib/client.js"
   },
   "icon": "icon.svg",
   "files": [
@@ -23,7 +24,7 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && node scripts/build-client.mjs",
     "typecheck": "tsc --noEmit",
     "check": "pnpm typecheck && pnpm build",
     "test": "node --test test/*.test.mjs",
@@ -39,7 +40,14 @@
         "0.2.2-rc.1": "compatible"
       }
     },
-    "manifestVersion": 1
+    "manifestVersion": 1,
+    "client": {
+      "platform": "web",
+      "inject": [
+        "slots",
+        "locale"
+      ]
+    }
   },
   "dependencies": {
     "dingtalk-stream": "^2.1.6-beta.1",
@@ -57,6 +65,7 @@
     "@deepseek-ai/cordis": "4.0.4",
     "@types/node": "^22.20.0",
     "tsdown": "^0.4.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "esbuild": "^0.25.12"
   }
 }

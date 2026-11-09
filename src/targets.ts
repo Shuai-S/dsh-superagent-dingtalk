@@ -112,3 +112,47 @@ export async function touchTarget(id: string, baseDir?: string): Promise<void> {
     console.error('[dingtalk] targets: touch failed (' + String(error).slice(0, 160) + ')')
   }
 }
+
+/** upsert 单目标（targetId 合法性由调用方校验；更新保留 createdAt）。 */
+export async function upsertTarget(input: { id: string; address: Record<string, string>; label?: string }, baseDir?: string): Promise<{ created: boolean }> {
+  const path = targetsFile(baseDir)
+  let created = false
+  try {
+    await enqueueWrite(path, async () => {
+      const targets = await readTargets(baseDir)
+      const at = new Date().toISOString()
+      const row = targets.find((t) => t.id === input.id)
+      if (row) {
+        row.address = input.address
+        row.label = input.label ?? row.label
+        row.lastUsedAt = at
+      } else {
+        created = true
+        targets.push({ id: input.id, address: input.address, label: input.label ?? '', createdAt: at, lastUsedAt: at })
+      }
+      await writeAtomic(path, serialize(targets))
+    })
+  } catch (error) {
+    console.error('[dingtalk] targets: upsert failed (' + String(error).slice(0, 160) + ')')
+    throw error
+  }
+  return { created }
+}
+
+/** 删除单目标；返回是否确有删除（不存在为 false）。 */
+export async function removeTarget(id: string, baseDir?: string): Promise<boolean> {
+  const path = targetsFile(baseDir)
+  let removed = false
+  try {
+    await enqueueWrite(path, async () => {
+      const targets = await readTargets(baseDir)
+      const next = targets.filter((t) => t.id !== id)
+      if (next.length === targets.length) return
+      removed = true
+      await writeAtomic(path, serialize(next))
+    })
+  } catch (error) {
+    console.error('[dingtalk] targets: remove failed (' + String(error).slice(0, 160) + ')')
+  }
+  return removed
+}

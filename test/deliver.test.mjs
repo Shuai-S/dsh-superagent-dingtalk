@@ -136,7 +136,7 @@ test('deliver: 受理构造非人类 Trigger（staffId → oTo；conversationId 
   const trig = received[0]
   assert.equal(trig.source, 'dingtalk')
   assert.equal(trig.human, false)
-  assert.equal(trig.actor.id, 'deliver')
+  assert.equal(trig.actor.id, 'dsh-superagent-dingtalk')
   assert.equal(trig.text, '发版完成')
   assert.deepEqual(trig.threads, [{ source: 'dingtalk', id: 'direct:085' }])
   assert.equal(trig.channel.address.account, 'ck')
