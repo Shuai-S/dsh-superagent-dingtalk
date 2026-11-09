@@ -8,6 +8,7 @@
  *  mirrors the dws kind; the engine duck-types it at runtime. */
 import { z } from 'zod'
 import type { Localized, OutboundMessageLike, SourceContextLike, SourceKindLike, TriggerLike } from './types.ts'
+import type { AclPolicy } from './acl.ts'
 import { downloadDingtalkImage, emptyLink, getAccessToken, recallThinkingEmotion, sendRobotMessage } from './robot.ts'
 import { bumpFail, bumpOut } from './counters.ts'
 import { chunkText, DINGTALK_TEXT_MAX_BYTES } from './chunk.ts'
@@ -43,6 +44,15 @@ const normalizeRow = (row: unknown): Record<string, unknown> | undefined => {
   return next
 }
 
+/** ACL 访问模式（契约 docs/rpc-contract.md §3；判定实现在 vendored src/acl.ts）。
+ *  不设 policy = 全放行（向后兼容）；形状非法按 schema 拒绝，不做静默降级。 */
+export const AclPolicySchema = z.object({
+  mode: z.enum(['allowlist', 'open']),
+  allowUsers: z.array(z.string()),
+  groupOnly: z.boolean().optional(),
+  denyText: z.object({ zh: z.string().min(1), en: z.string().min(1) }).optional(),
+}).strict()
+
 export const DingConfigSchema = z.preprocess((raw) => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
   const record = raw as Record<string, unknown>
@@ -67,6 +77,7 @@ export const DingConfigSchema = z.preprocess((raw) => {
 }, z.object({
   robots: z.array(RobotRowSchema).default([]),
   chats: z.array(ChatRowSchema).default([]),
+  policy: AclPolicySchema.optional(),
 }).strict()
   .refine((cfg) => cfg.chats.every((c) => !c.robot.trim() || cfg.robots.some((r) => idOf(r) === c.robot.trim())),
     "Chat robot must match a configured robot's RobotCode or AppKey (or stay empty for the first robot)"))

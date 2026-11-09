@@ -5,7 +5,7 @@
  *  carry the robot dimension so server redeliveries dedupe and two robots in
  *  one conversation never collide). Redeliveries are additionally caught by a
  *  persistent per-robot ID ring (dedup.ts), and the `dingtalkStream` health
- *  details carry compact in=/out=/fail=/last= counters (counters.ts). */
+ *  details carry compact in=/out=/fail=/deny=/last= counters (counters.ts). */
 import { mkdir, rename } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -13,8 +13,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { DWClient, TOPIC_ROBOT, type RobotMessage } from 'dingtalk-stream'
 import type { SourceContextLike, TriggerLike } from './types.ts'
 import { HEALTH_ENTRY, channelConfig, resolveRobots, type DingConfig, type EffectiveRobot } from './dingtalk-kind.ts'
-import { attachThinkingEmotion, downloadDingtalkMediaToFile } from './robot.ts'
-import { bumpIn, counterDetail } from './counters.ts'
+import { attachThinkingEmotion, downloadDingtalkMediaToFile, sendRobotMessage } from './robot.ts'
+import { aclDenyNoticeText, evaluateAcl } from './acl.ts'
+import { bumpDeny, bumpIn, counterDetail } from './counters.ts'
 import { seenOrAdd } from './dedup.ts'
 
 interface DownStreamLike { data: string; headers?: { messageId?: string } }
@@ -215,6 +216,23 @@ async function streamOnce(source: SourceContextLike, signal: AbortSignal, snapsh
     // 空 msgId 不入环按新消息处理；seenOrAdd 写失败时放行（log 在其内部），绝不因去重层吞消息。
     if (msg.msgId && (await seenOrAdd(current.rowId, msg.msgId))) {
       console.error(`[dingtalk][${robotLabel(current)}] msg skip (redelivered): msgId=${msg.msgId}`)
+      return
+    }
+    // ACL 判定（契约 §3）：派发（receive）之前；policy 缺省 = 全放行。会话类型
+    // 不取 conversationType 字段（本环境不可信，见 robot.ts）：按 chats 配置推断
+    // ——已登记群 = 'group'，其余（单聊/未登记侧聊）= 'single'。
+    const configuredGroup = current.chats.some((c) => c.openConversationId === msg.conversationId)
+    const verdict = evaluateAcl(channelConfig.current?.config.policy, { actorId: msg.senderStaffId, conversationType: configuredGroup ? 'group' : 'single' })
+    if (!verdict.allowed) {
+      bumpDeny(current.rowId)
+      console.error(`[dingtalk][${robotLabel(current)}] acl deny: reason=${verdict.reason} staffId=${msg.senderStaffId}`)
+      // 回执 = robot 文本消息（群消息回群、单聊回单聊，与回复同路径语义）；回执失败
+      // 只记 stderr——回执失败不是发送失败，不入 failure-log（send-failures.jsonl）。
+      try {
+        await sendRobotMessage(current.clientId, current.appSecret, msg.robotCode || current.robotCode, { conversation: msg.conversationId, staffId: msg.senderStaffId }, aclDenyNoticeText(verdict, 'zh'))
+      } catch (error) {
+        console.error(`[dingtalk] acl deny receipt failed: ${String(error).slice(0, 200)}`)
+      }
       return
     }
     if (msg.msgId) bumpIn(current.rowId)

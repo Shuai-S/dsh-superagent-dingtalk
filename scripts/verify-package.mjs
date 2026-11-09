@@ -43,6 +43,10 @@ if (pkgText) {
     check('lib/index.js contains sources.register(', lib.includes('sources.register('))
     const kind = String(pkg.name ?? '').replace(/^dsh-superagent-/, '')
     check(`lib/index.js contains kind name "${kind}"`, kind === '' || lib.includes(kind))
+    // P-B 路由契约探针：webServer seam 路由名防漂移（client bundle 探针 N/A：本包
+    // 无 client bundle，「源设置」页壳属 P-C'）。
+    check("lib/index.js contains '/dsh-dingtalk/api'", lib.includes('/dsh-dingtalk/api'), 'deliver route prefix drifted')
+    check("lib/index.js contains '/deliver'", lib.includes('/deliver'), 'deliver route literal drifted')
   }
 
   // 3) cordis.patch.yml 的 - id: 与包名一致（patch 真挂载本包）。
